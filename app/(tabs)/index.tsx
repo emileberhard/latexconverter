@@ -268,7 +268,7 @@ export default function CameraScreen() {
       const models = { "4o": "gpt-4o-2024-08-06", mini: "gpt-4o-mini" };
       const selectedModel = models["4o"];
 
-      const detailLevel = selectedModel === models["mini"] ? "high" : "low";
+      const detailLevel = selectedModel === models["mini"] ? "high" : "high";
 
       const response = await openai.beta.chat.completions.parse({
         model: selectedModel,

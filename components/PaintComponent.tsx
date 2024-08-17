@@ -34,6 +34,12 @@ const PaintOnImage = React.memo(
     const previewImage = useImage(previewUrl);
     const fullImage = useImage(imageUrl);
     const [currentImage, setCurrentImage] = useState(null);
+    const [bbox, setBbox] = useState({
+      minX: Infinity,
+      minY: Infinity,
+      maxX: -Infinity,
+      maxY: -Infinity,
+    });
 
     useEffect(() => {
       if (previewImage) {
@@ -65,6 +71,17 @@ const PaintOnImage = React.memo(
         const yMid = (lastPoint.y + y) / 2;
 
         currentPath.quadTo(lastPoint.x, lastPoint.y, xMid, yMid);
+
+        // Update bounding box
+        setBbox((currentBbox) => {
+          return {
+            minX: Math.min(currentBbox.minX, x),
+            minY: Math.min(currentBbox.minY, y),
+            maxX: Math.max(currentBbox.maxX, x),
+            maxY: Math.max(currentBbox.maxY, y),
+          };
+        });
+
         return [...currentPaths.slice(0, currentPaths.length - 1), currentPath];
       });
     }, []);
@@ -79,13 +96,27 @@ const PaintOnImage = React.memo(
 
     const handleConfirm = useCallback(() => {
       if (canvasRef.current) {
-        const snapshot = canvasRef.current.makeImageSnapshot();
-        if (snapshot) {
-          const base64 = snapshot.encodeToBase64();
-          onSave(`data:image/png;base64,${base64}`);
+        const { minX, minY, maxX, maxY } = bbox;
+
+        // Ensure bounding box is valid
+        if (minX <= maxX && minY <= maxY) {
+          const snapshot = canvasRef.current.makeImageSnapshot({
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY,
+          });
+
+          if (snapshot) {
+            const base64 = snapshot.encodeToBase64();
+            onSave(`data:image/png;base64,${base64}`);
+          }
+        } else {
+          // Handle case where no drawing has been done
+          console.warn("No drawing detected.");
         }
       }
-    }, [onSave]);
+    }, [onSave, bbox, canvasRef]);
 
     if (!currentImage) {
       return <View style={[styles.container, { width, height }]} />;
