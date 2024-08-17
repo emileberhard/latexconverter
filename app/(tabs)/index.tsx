@@ -12,18 +12,24 @@ import {
   Text,
   Dimensions,
   ActivityIndicator,
+  Alert,
+  Platform,
 } from "react-native";
 import { Camera, useCameraDevices } from "react-native-vision-camera";
 import { OpenAI } from "openai";
-import { useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import ImagePicker from "react-native-image-crop-picker";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
+import {
+  GestureHandlerRootView,
+  Gesture,
+  GestureDetector,
+  Directions,
+  FlingGestureHandler,
+  State,
+} from "react-native-gesture-handler";
 import { z } from "zod";
 import { zodResponseFormat } from "openai/helpers/zod";
-import { Platform } from "react-native";
 import Constants from "expo-constants";
-import { Alert } from "react-native";
 
 // Use the secret from Expo constants
 const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey;
@@ -41,11 +47,10 @@ const latexResponseSchema = z.object({
 
 export default function CameraScreen() {
   const [hasPermission, setHasPermission] = useState(false);
-  const cameraRef = useRef<Camera>(null);
-  const router = useRouter();
-  const devices = useCameraDevices();
   const [currentDeviceIndex, setCurrentDeviceIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
+  const cameraRef = useRef<Camera>(null);
+  const devices = useCameraDevices();
 
   const mainBackDevices = useMemo(() => {
     const isIOS = Platform.OS === "ios";
@@ -82,6 +87,13 @@ export default function CameraScreen() {
   }, [devices]);
 
   useEffect(() => {
+    (async () => {
+      const cameraPermission = await Camera.requestCameraPermission();
+      setHasPermission(cameraPermission === "granted");
+    })();
+  }, []);
+
+  useEffect(() => {
     console.log("Available main back camera lenses:");
     mainBackDevices.forEach((device, index) => {
       console.log(`Lens ${index + 1}:`);
@@ -102,13 +114,6 @@ export default function CameraScreen() {
       console.log("---");
     });
   }, [mainBackDevices]);
-
-  React.useEffect(() => {
-    (async () => {
-      const cameraPermission = await Camera.requestCameraPermission();
-      setHasPermission(cameraPermission === "granted");
-    })();
-  }, []);
 
   const switchToPreviousLens = useCallback(() => {
     if (mainBackDevices.length > 1) {
@@ -201,6 +206,22 @@ export default function CameraScreen() {
     }
   }, []);
 
+  const zoomOutGesture = Gesture.Fling()
+    .direction(Directions.DOWN)
+    .onStart((event) => {
+      switchToPreviousLens();
+    })
+    .runOnJS(true);
+
+  const zoomInGesture = Gesture.Fling()
+    .direction(Directions.UP)
+    .onStart((event) => {
+      switchToNextLens();
+    })
+    .runOnJS(true);
+
+  const flingGesture = Gesture.Simultaneous(zoomOutGesture, zoomInGesture);
+
   if (!hasPermission) {
     return <Text>No access to camera</Text>;
   }
@@ -213,13 +234,17 @@ export default function CameraScreen() {
 
   return (
     <GestureHandlerRootView style={styles.container}>
-      <Camera
-        ref={cameraRef}
-        style={StyleSheet.absoluteFill}
-        device={currentDevice}
-        isActive={true}
-        photo={true}
-      />
+      <GestureDetector gesture={flingGesture}>
+        <View style={StyleSheet.absoluteFill}>
+          <Camera
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            device={currentDevice}
+            isActive={true}
+            photo={true}
+          />
+        </View>
+      </GestureDetector>
       <View style={styles.buttonContainer}>
         {mainBackDevices.length > 1 && (
           <>
