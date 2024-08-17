@@ -6,7 +6,8 @@
       "@/*": ["./*"]
     },
     "noImplicitAny": false,
-    "strictFunctionTypes": false
+    "strictFunctionTypes": false,
+    "module": "esnext"
   },
   "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts"]
 }

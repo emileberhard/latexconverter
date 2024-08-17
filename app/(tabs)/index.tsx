@@ -4,6 +4,7 @@ import React, {
   useCallback,
   useMemo,
   useEffect,
+  Suspense,
 } from "react";
 import {
   View,
@@ -42,7 +43,9 @@ import { zodResponseFormat } from "openai/helpers/zod";
 import Constants from "expo-constants";
 import { MaterialIcons } from "@expo/vector-icons";
 import { Image } from "react-native";
-import PaintOnImage from "@/components/PaintComponent";
+
+// Lazy load the PaintOnImage component
+const PaintOnImage = React.lazy(() => import("@/components/PaintComponent"));
 
 const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey;
 
@@ -88,6 +91,10 @@ export default function CameraScreen() {
   const [showOverlay, setShowOverlay] = useState(false);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [isPainting, setIsPainting] = useState(false);
+  const [currentMode, setCurrentMode] = useState<"direct" | "crop" | "paint">(
+    "direct"
+  );
+  const [preloadedImage, setPreloadedImage] = useState<string | null>(null);
 
   const cameraRef = useRef<Camera>(null);
   const overlayOpacity = useSharedValue(0);
@@ -124,6 +131,16 @@ export default function CameraScreen() {
     savedScale.value = DEFAULT_ZOOM;
   }, []);
 
+  useEffect(() => {
+    // Preload the PaintOnImage component
+    const preloadPaintComponent = async () => {
+      const { default: PaintOnImage } = await import(
+        "@/components/PaintComponent"
+      );
+    };
+    preloadPaintComponent();
+  }, []);
+
   const pinchGesture = Gesture.Pinch()
     .onUpdate((e) => {
       const newScale = Math.min(
@@ -158,6 +175,7 @@ export default function CameraScreen() {
 
   const captureAndProcessImage = useCallback(
     async (mode: "direct" | "crop" | "paint") => {
+      setCurrentMode(mode);
       if (cameraRef.current) {
         try {
           const photo = await cameraRef.current.takePhoto({
@@ -183,6 +201,7 @@ export default function CameraScreen() {
               return;
             }
           } else if (mode === "paint") {
+            // Directly set the captured image for painting
             setCapturedImage(`file://${photo.path}`);
             setIsPainting(true);
             return;
@@ -223,15 +242,20 @@ export default function CameraScreen() {
   const processImage = async (imageToProcess: any) => {
     setIsLoading(true);
     try {
+      const promptText =
+        currentMode === "paint"
+          ? "What's inside the red circle?"
+          : "Convert any math you see to LaTeX. If there is no math in the image, return 'No math found'.";
+
       const response = await openai.beta.chat.completions.parse({
-        model: "gpt-4o-mini",
+        model: "gpt-4o-2024-08-06",
         messages: [
           {
             role: "user",
             content: [
               {
                 type: "text",
-                text: "Convert any math you see to LaTeX. If there is no math in the image, return 'No math found'.",
+                text: promptText,
               },
               {
                 type: "image_url",
@@ -275,27 +299,8 @@ export default function CameraScreen() {
 
   const handlePaintSave = async (editedImageUri: string) => {
     setIsPainting(false);
-    const base64 = await new Promise<string>((resolve, reject) => {
-      Image.getSize(
-        editedImageUri,
-        async (width, height) => {
-          const imageData = await fetch(editedImageUri);
-          const blob = await imageData.blob();
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = (error) => reject(error);
-          reader.readAsDataURL(blob);
-        },
-        (error) => reject(error)
-      );
-    });
-
-    const imageToProcess = {
-      path: editedImageUri,
-      data: base64.split(",")[1],
-    };
-
-    await processImage(imageToProcess);
+    setCapturedImage(null);
+    await processImage({ data: editedImageUri.split(",")[1] });
   };
 
   const handlePaintCancel = () => {
@@ -313,26 +318,16 @@ export default function CameraScreen() {
 
   if (isPainting && capturedImage) {
     return (
-      <PaintOnImage
-        imageUrl={capturedImage}
-        width={Dimensions.get("window").width}
-        height={Dimensions.get("window").height}
-      >
-        <View style={styles.paintButtonContainer}>
-          <TouchableOpacity
-            style={styles.confirmButton}
-            onPress={() => handlePaintSave(capturedImage)}
-          >
-            <Text style={styles.buttonText}>Confirm</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.cancelButton}
-            onPress={handlePaintCancel}
-          >
-            <Text style={styles.buttonText}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      </PaintOnImage>
+      <Suspense fallback={<ActivityIndicator size="large" color="#ffffff" />}>
+        <PaintOnImage
+          imageUrl={capturedImage}
+          previewUrl={preloadedImage}
+          width={Dimensions.get("window").width}
+          height={Dimensions.get("window").height}
+          onSave={handlePaintSave}
+          onCancel={handlePaintCancel}
+        />
+      </Suspense>
     );
   }
 
