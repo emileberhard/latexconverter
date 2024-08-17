@@ -41,38 +41,58 @@ import { z } from "zod";
 import { zodResponseFormat } from "openai/helpers/zod";
 import Constants from "expo-constants";
 import { MaterialIcons } from "@expo/vector-icons";
+import { Image } from "react-native";
 
-// Use the secret from Expo constants
 const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey;
 
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
 });
 
-const { width, height } = Dimensions.get("window");
+const logTokenUsageAndCost = (usage: {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}) => {
+  const inputCost = (usage.prompt_tokens / 1000000) * 0.15;
+  const outputCost = (usage.completion_tokens / 1000000) * 0.6;
+  const totalCost = inputCost + outputCost;
+  const costFor1000Requests = totalCost * 1000;
 
-// Define the Zod schema
+  console.log(
+    `Token usage - Input: ${usage.prompt_tokens}, Output: ${usage.completion_tokens}`
+  );
+  console.log(
+    `Estimated cost - Input: $${inputCost.toFixed(
+      6
+    )}, Output: $${outputCost.toFixed(6)}, Total: $${totalCost.toFixed(6)}`
+  );
+  console.log(
+    `Estimated cost for 1000 identical requests: $${costFor1000Requests.toFixed(
+      2
+    )}`
+  );
+};
+
+const DEFAULT_ZOOM = 1;
+
 const latexResponseSchema = z.object({
   latex: z.string(),
 });
 
 export default function CameraScreen() {
   const [hasPermission, setHasPermission] = useState(false);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [isLoading, setIsLoading] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
 
   const cameraRef = useRef<Camera>(null);
   const overlayOpacity = useSharedValue(0);
-  const scale = useSharedValue(1);
-  const savedScale = useSharedValue(1);
+  const scale = useSharedValue(DEFAULT_ZOOM);
+  const savedScale = useSharedValue(DEFAULT_ZOOM);
 
   const device = useCameraDevice("back", {
-    physicalDevices: [
-      "ultra-wide-angle-camera",
-      "wide-angle-camera",
-      "telephoto-camera",
-    ],
+    physicalDevices: ["wide-angle-camera", "telephoto-camera"],
   });
 
   const format = useCameraFormat(device, [
@@ -93,6 +113,12 @@ export default function CameraScreen() {
       const cameraPermission = await Camera.requestCameraPermission();
       setHasPermission(cameraPermission === "granted");
     })();
+  }, []);
+
+  useEffect(() => {
+    setZoom(DEFAULT_ZOOM);
+    scale.value = DEFAULT_ZOOM;
+    savedScale.value = DEFAULT_ZOOM;
   }, []);
 
   const pinchGesture = Gesture.Pinch()
@@ -127,82 +153,116 @@ export default function CameraScreen() {
     setTimeout(() => setShowOverlay(false), 3000);
   }, [overlayOpacity]);
 
-  const captureImage = useCallback(async () => {
-    if (cameraRef.current) {
-      try {
-        const photo = await cameraRef.current.takePhoto({
-          flash: "off",
-        });
-
-        let croppedImage;
+  const captureAndProcessImage = useCallback(
+    async (shouldCrop: boolean) => {
+      if (cameraRef.current) {
         try {
-          croppedImage = await ImagePicker.openCropper({
-            path: `file://${photo.path}`,
-            width: 1600,
-            height: 900,
-            mediaType: "photo",
-            cropping: true,
-            cropperToolbarTitle: "Crop Image (16:9)",
-            freeStyleCropEnabled: true,
-            includeBase64: true,
-          });
-        } catch (cropError) {
-          console.log("User cancelled image cropping");
-          return;
-        }
-
-        setIsLoading(true);
-        try {
-          const response = await openai.beta.chat.completions.parse({
-            model: "gpt-4o-mini",
-            messages: [
-              {
-                role: "user",
-                content: [
-                  {
-                    type: "text",
-                    text: "Convert any math you see to LaTeX. If there is no math in the image, return 'No math found'.",
-                  },
-                  {
-                    type: "image_url",
-                    image_url: {
-                      url: `data:image/jpeg;base64,${croppedImage.data}`,
-                    },
-                  },
-                ],
-              },
-            ],
-            response_format: zodResponseFormat(
-              latexResponseSchema,
-              "latex_response"
-            ),
+          const photo = await cameraRef.current.takePhoto({
+            flash: "off",
           });
 
-          const parsedResponse = response.choices[0].message.parsed;
-
-          if (parsedResponse) {
-            await Clipboard.setStringAsync(parsedResponse.latex);
-            showTemporaryOverlay();
+          let imageToProcess;
+          if (shouldCrop) {
+            try {
+              imageToProcess = await ImagePicker.openCropper({
+                path: `file://${photo.path}`,
+                width: 512,
+                height: 512,
+                mediaType: "photo",
+                cropping: true,
+                cropperToolbarTitle: "Crop Image (1:1)",
+                freeStyleCropEnabled: true,
+                includeBase64: true,
+              });
+            } catch (cropError) {
+              console.log("User cancelled image cropping");
+              return;
+            }
           } else {
-            console.error("Error: Invalid LaTeX conversion received", response);
-            Alert.alert("Error", "Invalid LaTeX conversion received");
+            const base64 = await new Promise<string>((resolve, reject) => {
+              Image.getSize(
+                `file://${photo.path}`,
+                async (width, height) => {
+                  const imageData = await fetch(`file://${photo.path}`);
+                  const blob = await imageData.blob();
+                  const reader = new FileReader();
+                  reader.onload = () => resolve(reader.result as string);
+                  reader.onerror = (error) => reject(error);
+                  reader.readAsDataURL(blob);
+                },
+                (error) => reject(error)
+              );
+            });
+
+            imageToProcess = {
+              path: photo.path,
+              data: base64.split(",")[1],
+            };
+          }
+
+          setIsLoading(true);
+          try {
+            const response = await openai.beta.chat.completions.parse({
+              model: "gpt-4o-mini",
+              messages: [
+                {
+                  role: "user",
+                  content: [
+                    {
+                      type: "text",
+                      text: "Convert any math you see to LaTeX. If there is no math in the image, return 'No math found'.",
+                    },
+                    {
+                      type: "image_url",
+                      image_url: {
+                        url: `data:image/jpeg;base64,${imageToProcess.data}`,
+                        detail: "low",
+                      },
+                    },
+                  ],
+                },
+              ],
+              response_format: zodResponseFormat(
+                latexResponseSchema,
+                "latex_response"
+              ),
+            });
+
+            if (response.usage) {
+              logTokenUsageAndCost(response.usage);
+            }
+
+            const parsedResponse = response.choices[0].message.parsed;
+
+            if (parsedResponse) {
+              console.log("Parsed LaTeX:", parsedResponse.latex);
+              await Clipboard.setStringAsync(parsedResponse.latex);
+              showTemporaryOverlay();
+            } else {
+              console.error(
+                "Error: Invalid LaTeX conversion received",
+                response
+              );
+              Alert.alert("Error", "Invalid LaTeX conversion received");
+            }
+          } catch (error) {
+            console.error("Error:", error);
+            const errorMessage =
+              error instanceof Error ? error.message : String(error);
+            Alert.alert("Error", `Error processing image: ${errorMessage}`);
+          } finally {
+            setIsLoading(false);
           }
         } catch (error) {
-          console.error("Error:", error);
+          console.error("Error capturing image:", error);
           const errorMessage =
             error instanceof Error ? error.message : String(error);
-          Alert.alert("Error", `Error processing image: ${errorMessage}`);
-        } finally {
-          setIsLoading(false);
+          Alert.alert("Error", `Error capturing image: ${errorMessage}`);
         }
-      } catch (error) {
-        console.error("Error capturing image:", error);
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
-        Alert.alert("Error", `Error capturing image: ${errorMessage}`);
       }
-    }
-  }, [showTemporaryOverlay]);
+    },
+    [showTemporaryOverlay]
+  );
 
   if (!hasPermission) {
     return <Text>No access to camera</Text>;
@@ -229,8 +289,17 @@ export default function CameraScreen() {
         </View>
       </GestureDetector>
       <View style={styles.buttonContainer}>
-        <TouchableOpacity style={styles.captureButton} onPress={captureImage}>
-          <MaterialIcons name="camera" size={60} color="#000000" />
+        <TouchableOpacity
+          style={styles.captureButton}
+          onPress={() => captureAndProcessImage(false)}
+        >
+          <MaterialIcons name="flash-on" size={40} color="#000000" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.captureButton}
+          onPress={() => captureAndProcessImage(true)}
+        >
+          <MaterialIcons name="crop" size={40} color="#000000" />
         </TouchableOpacity>
       </View>
       {isLoading && (
@@ -260,14 +329,14 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     flexDirection: "row",
-    justifyContent: "center",
+    justifyContent: "space-evenly",
     paddingHorizontal: 20,
   },
   captureButton: {
     backgroundColor: "white",
-    borderRadius: 60,
-    width: 300,
-    height: 100,
+    borderRadius: 50,
+    width: 80,
+    height: 80,
     alignItems: "center",
     justifyContent: "center",
   },
