@@ -134,7 +134,7 @@ export default function CameraScreen() {
 
         try {
           const response = await openai.beta.chat.completions.parse({
-            model: "gpt-4o-2024-08-06",
+            model: "gpt-4o-mini",
             messages: [
               {
                 role: "user",
@@ -159,7 +159,6 @@ export default function CameraScreen() {
 
           if (parsedResponse) {
             await Clipboard.setStringAsync(parsedResponse.latex);
-            alert("LaTeX conversion copied to clipboard!");
 
             router.push({
               pathname: "/image-preview",
