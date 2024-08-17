@@ -1,34 +1,39 @@
 import React from "react";
-import { View, Image, StyleSheet } from "react-native";
+import { View, Image, StyleSheet, ScrollView } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 
 import { ThemedText } from "@/components/ThemedText";
 import { ThemedView } from "@/components/ThemedView";
 
 export default function ImagePreviewScreen() {
-  const { imageUri } = useLocalSearchParams();
+  const { imageUri, latex } = useLocalSearchParams();
   const router = useRouter();
 
-  // Handle the case where imageUri might be an array
   const uri = Array.isArray(imageUri) ? imageUri[0] : imageUri;
 
-  // Log the URI for debugging
-  console.log("Image URI:", uri);
+  console.log("LaTeX:", latex);
 
   return (
     <ThemedView style={styles.container}>
-      {uri ? (
-        <Image
-          source={{ uri: uri.toString() }}
-          style={styles.image}
-          resizeMode="contain"
-          onError={(error) =>
-            console.error("Image loading error:", error.nativeEvent.error)
-          }
-        />
-      ) : (
-        <ThemedText>No image to preview</ThemedText>
-      )}
+      <ScrollView contentContainerStyle={styles.scrollViewContent}>
+        {uri ? (
+          <Image
+            source={{ uri: uri.toString() }}
+            style={styles.image}
+            resizeMode="contain"
+            onError={(error) =>
+              console.error("Image loading error:", error.nativeEvent.error)
+            }
+          />
+        ) : (
+          <ThemedText>No image to preview</ThemedText>
+        )}
+        {latex ? (
+          <ThemedText style={styles.latexText}>{latex}</ThemedText>
+        ) : (
+          <ThemedText>No LaTeX response</ThemedText>
+        )}
+      </ScrollView>
     </ThemedView>
   );
 }
@@ -36,11 +41,19 @@ export default function ImagePreviewScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  scrollViewContent: {
     alignItems: "center",
-    justifyContent: "center",
+    justifyContent: "flex-start",
   },
   image: {
     width: "100%",
-    height: "100%",
+    height: 300,
+  },
+  latexText: {
+    marginTop: 20,
+    fontSize: 16,
+    textAlign: "center",
+    paddingHorizontal: 10,
   },
 });

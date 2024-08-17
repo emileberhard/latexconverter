@@ -1,0 +1,28 @@
+{
+  "cli": {
+    "version": ">= 10.2.3"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_OPENAI_API_KEY": "$(OPENAI_API_KEY)"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_OPENAI_API_KEY": "$(OPENAI_API_KEY)"
+      }
+    },
+    "production": {
+      "env": {
+        "EXPO_PUBLIC_OPENAI_API_KEY": "$(OPENAI_API_KEY)"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

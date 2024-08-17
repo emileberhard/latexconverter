@@ -1,4 +1,10 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, {
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+  useEffect,
+} from "react";
 import {
   View,
   StyleSheet,
@@ -6,18 +12,18 @@ import {
   Text,
   Dimensions,
 } from "react-native";
-import { CameraView, Camera } from "expo-camera";
-import * as FileSystem from "expo-file-system";
+import { Camera, useCameraDevices } from "react-native-vision-camera";
 import { OpenAI } from "openai";
 import { useRouter } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import ImagePicker from "react-native-image-crop-picker";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { z } from "zod";
-import { zodResponseFormat } from "openai/helpers/zod"; // Add this import
+import { zodResponseFormat } from "openai/helpers/zod";
+import { Platform } from "react-native";
 
-const OPENAI_API_KEY =
-  "sk-proj-VFyGtiY1hPXxUAxYs8v1T3BlbkFJ79xSOLRuWvoKLdR8Pmet";
+// Use the secret from Expo constants
+const OPENAI_API_KEY = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
 
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
@@ -31,49 +37,100 @@ const latexResponseSchema = z.object({
 });
 
 export default function CameraScreen() {
-  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
-  const cameraRef = useRef<CameraView>(null);
+  const [hasPermission, setHasPermission] = useState(false);
+  const cameraRef = useRef<Camera>(null);
   const router = useRouter();
+  const devices = useCameraDevices();
+  const [currentDeviceIndex, setCurrentDeviceIndex] = useState(0);
+
+  const mainBackDevices = useMemo(() => {
+    const isIOS = Platform.OS === "ios";
+    const deviceNameMap = isIOS
+      ? {
+          "Back Ultra Wide Camera": "ultra-wide",
+          "Back Camera": "wide",
+          "Back Telephoto Camera": "telephoto",
+        }
+      : {};
+
+    return devices
+      .filter((device) => {
+        if (isIOS) {
+          return (
+            device.position === "back" &&
+            Object.keys(deviceNameMap).includes(device.name)
+          );
+        } else {
+          return device.position === "back";
+        }
+      })
+      .sort((a, b) => {
+        if (isIOS) {
+          const order = ["ultra-wide", "wide", "telephoto"];
+          return (
+            order.indexOf(deviceNameMap[a.name as keyof typeof deviceNameMap]) -
+            order.indexOf(deviceNameMap[b.name as keyof typeof deviceNameMap])
+          );
+        } else {
+          return a.id.localeCompare(b.id);
+        }
+      });
+  }, [devices]);
 
   useEffect(() => {
+    console.log("Available main back camera lenses:");
+    mainBackDevices.forEach((device, index) => {
+      console.log(`Lens ${index + 1}:`);
+      console.log(`  Device ID: ${device.id}`);
+      console.log(`  Device Name: ${device.name}`);
+      console.log(`  Has Flash: ${device.hasFlash}`);
+      console.log(`  Has Torch: ${device.hasTorch}`);
+      console.log(`  Minimum Zoom: ${device.minZoom}`);
+      console.log(`  Maximum Zoom: ${device.maxZoom}`);
+      console.log(
+        `  Supports Low Light Boost: ${
+          device.supportsLowLightBoost ? "Yes" : "No"
+        }`
+      );
+      console.log(
+        `  Supports RAW Capture: ${device.supportsRawCapture ? "Yes" : "No"}`
+      );
+      console.log("---");
+    });
+  }, [mainBackDevices]);
+
+  React.useEffect(() => {
     (async () => {
-      const { status } = await Camera.requestCameraPermissionsAsync();
-      setHasPermission(status === "granted");
+      const cameraPermission = await Camera.requestCameraPermission();
+      setHasPermission(cameraPermission === "granted");
     })();
   }, []);
+
+  const switchCamera = useCallback(() => {
+    if (mainBackDevices.length > 1) {
+      setCurrentDeviceIndex(
+        (prevIndex) => (prevIndex + 1) % mainBackDevices.length
+      );
+    }
+  }, [mainBackDevices]);
 
   const captureImage = useCallback(async () => {
     if (cameraRef.current) {
       try {
-        const photo = await cameraRef.current.takePictureAsync({
-          quality: 1,
-          base64: true,
-          skipProcessing: true,
+        const photo = await cameraRef.current.takePhoto({
+          flash: "off",
         });
-        if (!photo) {
-          throw new Error("Failed to take picture");
-        }
 
-        // Open the image cropper
         const croppedImage = await ImagePicker.openCropper({
-          path: photo.uri,
-          width: 1000,
-          height: 1000,
+          path: `file://${photo.path}`,
+          width: 1600,
+          height: 900,
           mediaType: "photo",
           cropping: true,
+          cropperToolbarTitle: "Crop Image (16:9)",
           freeStyleCropEnabled: true,
           includeBase64: true,
         });
-
-        // Save the cropped image to the cache directory
-        const fileName = `cropped_image_${Date.now()}.jpg`;
-        const filePath = `${FileSystem.cacheDirectory}${fileName}`;
-        await FileSystem.writeAsStringAsync(filePath, croppedImage.data, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-
-        console.log(`Cropped image saved to: ${filePath}`);
-        alert(`Cropped image saved to: ${filePath}`);
 
         try {
           const response = await openai.beta.chat.completions.parse({
@@ -103,6 +160,14 @@ export default function CameraScreen() {
           if (parsedResponse) {
             await Clipboard.setStringAsync(parsedResponse.latex);
             alert("LaTeX conversion copied to clipboard!");
+
+            router.push({
+              pathname: "/image-preview",
+              params: {
+                imageUri: `data:image/jpeg;base64,${croppedImage.data}`,
+                latex: parsedResponse.latex,
+              },
+            });
           } else {
             console.error("Error: Invalid LaTeX conversion received", response);
             alert("Error: Invalid LaTeX conversion received");
@@ -110,13 +175,12 @@ export default function CameraScreen() {
         } catch (error) {
           console.error("Error:", error);
           alert("Error converting image to LaTeX");
-        }
 
-        // Navigate to image preview with the saved file path
-        router.push({
-          pathname: "/image-preview",
-          params: { imageUri: filePath },
-        });
+          router.push({
+            pathname: "/image-preview",
+            params: { imageUri: `data:image/jpeg;base64,${croppedImage.data}` },
+          });
+        }
       } catch (error) {
         console.error("Error capturing image:", error);
         alert("Error capturing image");
@@ -124,26 +188,35 @@ export default function CameraScreen() {
     }
   }, [router]);
 
-  if (hasPermission === null) {
-    return <View />;
-  }
-  if (hasPermission === false) {
+  if (!hasPermission) {
     return <Text>No access to camera</Text>;
   }
 
+  if (mainBackDevices.length === 0) {
+    return <Text>No main back cameras found</Text>;
+  }
+
+  const currentDevice = mainBackDevices[currentDeviceIndex];
+
   return (
     <GestureHandlerRootView style={styles.container}>
-      <CameraView
+      <Camera
         ref={cameraRef}
-        style={styles.camera}
-        facing={"back"}
-        autofocus="off"
-        zoom={0}
-        pictureSize="max"
+        style={StyleSheet.absoluteFill}
+        device={currentDevice}
+        isActive={true}
+        photo={true}
       />
-      <TouchableOpacity style={styles.captureButton} onPress={captureImage}>
-        <Text style={styles.captureButtonText}>Capture</Text>
-      </TouchableOpacity>
+      <View style={styles.buttonContainer}>
+        {mainBackDevices.length > 1 && (
+          <TouchableOpacity style={styles.switchButton} onPress={switchCamera}>
+            <Text style={styles.buttonText}>Switch Lens</Text>
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity style={styles.captureButton} onPress={captureImage}>
+          <Text style={styles.buttonText}>Capture</Text>
+        </TouchableOpacity>
+      </View>
     </GestureHandlerRootView>
   );
 }
@@ -155,15 +228,25 @@ const styles = StyleSheet.create({
   camera: {
     flex: 1,
   },
-  captureButton: {
+  buttonContainer: {
     position: "absolute",
     bottom: 20,
-    alignSelf: "center",
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "space-around",
+  },
+  switchButton: {
     backgroundColor: "white",
     padding: 15,
     borderRadius: 10,
   },
-  captureButtonText: {
+  captureButton: {
+    backgroundColor: "white",
+    padding: 15,
+    borderRadius: 10,
+  },
+  buttonText: {
     fontSize: 18,
   },
 });
