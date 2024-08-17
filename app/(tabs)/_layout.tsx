@@ -3,13 +3,9 @@ import {
   DefaultTheme,
   ThemeProvider,
 } from "@react-navigation/native";
-import { useFonts } from "expo-font";
-import { Stack, Tabs } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import { useEffect } from "react";
-import "react-native-reanimated";
+import { Stack } from "expo-router";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { Ionicons } from "@expo/vector-icons";
 
 import { useColorScheme } from "@/hooks/useColorScheme";
 
@@ -22,26 +18,15 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-        <Tabs>
-          <Tabs.Screen
+        <Stack>
+          <Stack.Screen
             name="index"
             options={{
               title: "Camera",
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="camera" size={size} color={color} />
-              ),
+              headerShown: false,
             }}
           />
-          <Tabs.Screen
-            name="image-preview"
-            options={{
-              title: "Image Preview",
-              tabBarIcon: ({ color, size }) => (
-                <Ionicons name="image" size={size} color={color} />
-              ),
-            }}
-          />
-        </Tabs>
+        </Stack>
       </ThemeProvider>
     </GestureHandlerRootView>
   );
