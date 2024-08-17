@@ -42,6 +42,7 @@ import { zodResponseFormat } from "openai/helpers/zod";
 import Constants from "expo-constants";
 import { MaterialIcons } from "@expo/vector-icons";
 import { Image } from "react-native";
+import PaintOnImage from "@/components/PaintComponent";
 
 const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey;
 
@@ -85,6 +86,8 @@ export default function CameraScreen() {
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [isLoading, setIsLoading] = useState(false);
   const [showOverlay, setShowOverlay] = useState(false);
+  const [capturedImage, setCapturedImage] = useState<string | null>(null);
+  const [isPainting, setIsPainting] = useState(false);
 
   const cameraRef = useRef<Camera>(null);
   const overlayOpacity = useSharedValue(0);
@@ -154,7 +157,7 @@ export default function CameraScreen() {
   }, [overlayOpacity]);
 
   const captureAndProcessImage = useCallback(
-    async (shouldCrop: boolean) => {
+    async (mode: "direct" | "crop" | "paint") => {
       if (cameraRef.current) {
         try {
           const photo = await cameraRef.current.takePhoto({
@@ -162,7 +165,8 @@ export default function CameraScreen() {
           });
 
           let imageToProcess;
-          if (shouldCrop) {
+
+          if (mode === "crop") {
             try {
               imageToProcess = await ImagePicker.openCropper({
                 path: `file://${photo.path}`,
@@ -178,6 +182,10 @@ export default function CameraScreen() {
               console.log("User cancelled image cropping");
               return;
             }
+          } else if (mode === "paint") {
+            setCapturedImage(`file://${photo.path}`);
+            setIsPainting(true);
+            return;
           } else {
             const base64 = await new Promise<string>((resolve, reject) => {
               Image.getSize(
@@ -200,59 +208,7 @@ export default function CameraScreen() {
             };
           }
 
-          setIsLoading(true);
-          try {
-            const response = await openai.beta.chat.completions.parse({
-              model: "gpt-4o-mini",
-              messages: [
-                {
-                  role: "user",
-                  content: [
-                    {
-                      type: "text",
-                      text: "Convert any math you see to LaTeX. If there is no math in the image, return 'No math found'.",
-                    },
-                    {
-                      type: "image_url",
-                      image_url: {
-                        url: `data:image/jpeg;base64,${imageToProcess.data}`,
-                        detail: "low",
-                      },
-                    },
-                  ],
-                },
-              ],
-              response_format: zodResponseFormat(
-                latexResponseSchema,
-                "latex_response"
-              ),
-            });
-
-            if (response.usage) {
-              logTokenUsageAndCost(response.usage);
-            }
-
-            const parsedResponse = response.choices[0].message.parsed;
-
-            if (parsedResponse) {
-              console.log("Parsed LaTeX:", parsedResponse.latex);
-              await Clipboard.setStringAsync(parsedResponse.latex);
-              showTemporaryOverlay();
-            } else {
-              console.error(
-                "Error: Invalid LaTeX conversion received",
-                response
-              );
-              Alert.alert("Error", "Invalid LaTeX conversion received");
-            }
-          } catch (error) {
-            console.error("Error:", error);
-            const errorMessage =
-              error instanceof Error ? error.message : String(error);
-            Alert.alert("Error", `Error processing image: ${errorMessage}`);
-          } finally {
-            setIsLoading(false);
-          }
+          await processImage(imageToProcess);
         } catch (error) {
           console.error("Error capturing image:", error);
           const errorMessage =
@@ -264,12 +220,120 @@ export default function CameraScreen() {
     [showTemporaryOverlay]
   );
 
+  const processImage = async (imageToProcess: any) => {
+    setIsLoading(true);
+    try {
+      const response = await openai.beta.chat.completions.parse({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Convert any math you see to LaTeX. If there is no math in the image, return 'No math found'.",
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${imageToProcess.data}`,
+                  detail: "low",
+                },
+              },
+            ],
+          },
+        ],
+        response_format: zodResponseFormat(
+          latexResponseSchema,
+          "latex_response"
+        ),
+      });
+
+      if (response.usage) {
+        logTokenUsageAndCost(response.usage);
+      }
+
+      const parsedResponse = response.choices[0].message.parsed;
+
+      if (parsedResponse) {
+        console.log("Parsed LaTeX:", parsedResponse.latex);
+        await Clipboard.setStringAsync(parsedResponse.latex);
+        showTemporaryOverlay();
+      } else {
+        console.error("Error: Invalid LaTeX conversion received", response);
+        Alert.alert("Error", "Invalid LaTeX conversion received");
+      }
+    } catch (error) {
+      console.error("Error:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      Alert.alert("Error", `Error processing image: ${errorMessage}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePaintSave = async (editedImageUri: string) => {
+    setIsPainting(false);
+    const base64 = await new Promise<string>((resolve, reject) => {
+      Image.getSize(
+        editedImageUri,
+        async (width, height) => {
+          const imageData = await fetch(editedImageUri);
+          const blob = await imageData.blob();
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = (error) => reject(error);
+          reader.readAsDataURL(blob);
+        },
+        (error) => reject(error)
+      );
+    });
+
+    const imageToProcess = {
+      path: editedImageUri,
+      data: base64.split(",")[1],
+    };
+
+    await processImage(imageToProcess);
+  };
+
+  const handlePaintCancel = () => {
+    setIsPainting(false);
+    setCapturedImage(null);
+  };
+
   if (!hasPermission) {
     return <Text>No access to camera</Text>;
   }
 
   if (!device) {
     return <Text>No camera device found</Text>;
+  }
+
+  if (isPainting && capturedImage) {
+    return (
+      <PaintOnImage
+        imageUrl={capturedImage}
+        width={Dimensions.get("window").width}
+        height={Dimensions.get("window").height}
+      >
+        <View style={styles.paintButtonContainer}>
+          <TouchableOpacity
+            style={styles.confirmButton}
+            onPress={() => handlePaintSave(capturedImage)}
+          >
+            <Text style={styles.buttonText}>Confirm</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.cancelButton}
+            onPress={handlePaintCancel}
+          >
+            <Text style={styles.buttonText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      </PaintOnImage>
+    );
   }
 
   return (
@@ -291,15 +355,21 @@ export default function CameraScreen() {
       <View style={styles.buttonContainer}>
         <TouchableOpacity
           style={styles.captureButton}
-          onPress={() => captureAndProcessImage(false)}
+          onPress={() => captureAndProcessImage("direct")}
         >
           <MaterialIcons name="flash-on" size={40} color="#000000" />
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.captureButton}
-          onPress={() => captureAndProcessImage(true)}
+          onPress={() => captureAndProcessImage("crop")}
         >
           <MaterialIcons name="crop" size={40} color="#000000" />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.captureButton}
+          onPress={() => captureAndProcessImage("paint")}
+        >
+          <MaterialIcons name="brush" size={40} color="#000000" />
         </TouchableOpacity>
       </View>
       {isLoading && (
@@ -361,6 +431,30 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   overlayText: {
+    color: "white",
+    fontSize: 16,
+  },
+  paintButtonContainer: {
+    position: "absolute",
+    bottom: 20,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    justifyContent: "space-evenly",
+  },
+  confirmButton: {
+    backgroundColor: "green",
+    borderRadius: 5,
+    padding: 10,
+    alignItems: "center",
+  },
+  cancelButton: {
+    backgroundColor: "red",
+    borderRadius: 5,
+    padding: 10,
+    alignItems: "center",
+  },
+  buttonText: {
     color: "white",
     fontSize: 16,
   },
