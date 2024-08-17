@@ -15,21 +15,32 @@ import {
   Alert,
   Platform,
 } from "react-native";
-import { Camera, useCameraDevices } from "react-native-vision-camera";
+import {
+  Camera,
+  useCameraDevice,
+  useCameraFormat,
+  VideoStabilizationMode,
+} from "react-native-vision-camera";
 import { OpenAI } from "openai";
 import * as Clipboard from "expo-clipboard";
 import ImagePicker from "react-native-image-crop-picker";
 import {
-  GestureHandlerRootView,
   Gesture,
   GestureDetector,
-  Directions,
-  FlingGestureHandler,
-  State,
+  GestureHandlerRootView,
 } from "react-native-gesture-handler";
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+  withSequence,
+  withDelay,
+  runOnJS,
+} from "react-native-reanimated";
 import { z } from "zod";
 import { zodResponseFormat } from "openai/helpers/zod";
 import Constants from "expo-constants";
+import { MaterialIcons } from "@expo/vector-icons";
 
 // Use the secret from Expo constants
 const OPENAI_API_KEY = Constants.expoConfig?.extra?.openaiApiKey;
@@ -47,44 +58,35 @@ const latexResponseSchema = z.object({
 
 export default function CameraScreen() {
   const [hasPermission, setHasPermission] = useState(false);
-  const [currentDeviceIndex, setCurrentDeviceIndex] = useState(0);
+  const [zoom, setZoom] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
+  const [showOverlay, setShowOverlay] = useState(false);
+
   const cameraRef = useRef<Camera>(null);
-  const devices = useCameraDevices();
+  const overlayOpacity = useSharedValue(0);
+  const scale = useSharedValue(1);
+  const savedScale = useSharedValue(1);
 
-  const mainBackDevices = useMemo(() => {
-    const isIOS = Platform.OS === "ios";
-    const deviceNameMap = isIOS
-      ? {
-          "Back Ultra Wide Camera": "ultra-wide",
-          "Back Camera": "wide",
-          "Back Telephoto Camera": "telephoto",
-        }
-      : {};
+  const device = useCameraDevice("back", {
+    physicalDevices: [
+      "ultra-wide-angle-camera",
+      "wide-angle-camera",
+      "telephoto-camera",
+    ],
+  });
 
-    return devices
-      .filter((device) => {
-        if (isIOS) {
-          return (
-            device.position === "back" &&
-            Object.keys(deviceNameMap).includes(device.name)
-          );
-        } else {
-          return device.position === "back";
-        }
-      })
-      .sort((a, b) => {
-        if (isIOS) {
-          const order = ["ultra-wide", "wide", "telephoto"];
-          return (
-            order.indexOf(deviceNameMap[a.name as keyof typeof deviceNameMap]) -
-            order.indexOf(deviceNameMap[b.name as keyof typeof deviceNameMap])
-          );
-        } else {
-          return a.id.localeCompare(b.id);
-        }
-      });
-  }, [devices]);
+  const format = useCameraFormat(device, [
+    { autoFocusSystem: "phase-detection" },
+    { videoResolution: { width: 1920, height: 1080 } },
+    { fps: 60 },
+    { videoStabilizationMode: "cinematic-extended" },
+  ]);
+
+  const animatedOverlayStyle = useAnimatedStyle(() => {
+    return {
+      opacity: overlayOpacity.value,
+    };
+  });
 
   useEffect(() => {
     (async () => {
@@ -93,43 +95,37 @@ export default function CameraScreen() {
     })();
   }, []);
 
-  useEffect(() => {
-    console.log("Available main back camera lenses:");
-    mainBackDevices.forEach((device, index) => {
-      console.log(`Lens ${index + 1}:`);
-      console.log(`  Device ID: ${device.id}`);
-      console.log(`  Device Name: ${device.name}`);
-      console.log(`  Has Flash: ${device.hasFlash}`);
-      console.log(`  Has Torch: ${device.hasTorch}`);
-      console.log(`  Minimum Zoom: ${device.minZoom}`);
-      console.log(`  Maximum Zoom: ${device.maxZoom}`);
-      console.log(
-        `  Supports Low Light Boost: ${
-          device.supportsLowLightBoost ? "Yes" : "No"
-        }`
+  const pinchGesture = Gesture.Pinch()
+    .onUpdate((e) => {
+      const newScale = Math.min(
+        Math.max(savedScale.value * e.scale, device.minZoom),
+        device.maxZoom
       );
-      console.log(
-        `  Supports RAW Capture: ${device.supportsRawCapture ? "Yes" : "No"}`
-      );
-      console.log("---");
+      scale.value = newScale;
+      runOnJS(setZoom)(newScale);
+    })
+    .onEnd(() => {
+      savedScale.value = scale.value;
     });
-  }, [mainBackDevices]);
 
-  const switchToPreviousLens = useCallback(() => {
-    if (mainBackDevices.length > 1) {
-      setCurrentDeviceIndex((prevIndex) =>
-        prevIndex > 0 ? prevIndex - 1 : prevIndex
-      );
-    }
-  }, [mainBackDevices]);
+  const tapGesture = Gesture.Tap()
+    .onStart((event) => {
+      if (cameraRef.current) {
+        cameraRef.current.focus({ x: event.x, y: event.y });
+      }
+    })
+    .runOnJS(true);
 
-  const switchToNextLens = useCallback(() => {
-    if (mainBackDevices.length > 1) {
-      setCurrentDeviceIndex((prevIndex) =>
-        prevIndex < mainBackDevices.length - 1 ? prevIndex + 1 : prevIndex
-      );
-    }
-  }, [mainBackDevices]);
+  const combinedGesture = Gesture.Simultaneous(pinchGesture, tapGesture);
+
+  const showTemporaryOverlay = useCallback(() => {
+    setShowOverlay(true);
+    overlayOpacity.value = withSequence(
+      withTiming(1, { duration: 300 }),
+      withDelay(2400, withTiming(0, { duration: 300 }))
+    );
+    setTimeout(() => setShowOverlay(false), 3000);
+  }, [overlayOpacity]);
 
   const captureImage = useCallback(async () => {
     if (cameraRef.current) {
@@ -138,18 +134,24 @@ export default function CameraScreen() {
           flash: "off",
         });
 
-        const croppedImage = await ImagePicker.openCropper({
-          path: `file://${photo.path}`,
-          width: 1600,
-          height: 900,
-          mediaType: "photo",
-          cropping: true,
-          cropperToolbarTitle: "Crop Image (16:9)",
-          freeStyleCropEnabled: true,
-          includeBase64: true,
-        });
+        let croppedImage;
+        try {
+          croppedImage = await ImagePicker.openCropper({
+            path: `file://${photo.path}`,
+            width: 1600,
+            height: 900,
+            mediaType: "photo",
+            cropping: true,
+            cropperToolbarTitle: "Crop Image (16:9)",
+            freeStyleCropEnabled: true,
+            includeBase64: true,
+          });
+        } catch (cropError) {
+          console.log("User cancelled image cropping");
+          return;
+        }
 
-        setIsLoading(true); // Start loading
+        setIsLoading(true);
         try {
           const response = await openai.beta.chat.completions.parse({
             model: "gpt-4o-mini",
@@ -180,11 +182,7 @@ export default function CameraScreen() {
 
           if (parsedResponse) {
             await Clipboard.setStringAsync(parsedResponse.latex);
-            Alert.alert(
-              "LaTeX Copied",
-              "The LaTeX expression has been copied to your clipboard.",
-              [{ text: "OK" }]
-            );
+            showTemporaryOverlay();
           } else {
             console.error("Error: Invalid LaTeX conversion received", response);
             Alert.alert("Error", "Invalid LaTeX conversion received");
@@ -195,7 +193,7 @@ export default function CameraScreen() {
             error instanceof Error ? error.message : String(error);
           Alert.alert("Error", `Error processing image: ${errorMessage}`);
         } finally {
-          setIsLoading(false); // Stop loading regardless of success or failure
+          setIsLoading(false);
         }
       } catch (error) {
         console.error("Error capturing image:", error);
@@ -204,81 +202,46 @@ export default function CameraScreen() {
         Alert.alert("Error", `Error capturing image: ${errorMessage}`);
       }
     }
-  }, []);
-
-  const zoomOutGesture = Gesture.Fling()
-    .direction(Directions.DOWN)
-    .onStart((event) => {
-      switchToPreviousLens();
-    })
-    .runOnJS(true);
-
-  const zoomInGesture = Gesture.Fling()
-    .direction(Directions.UP)
-    .onStart((event) => {
-      switchToNextLens();
-    })
-    .runOnJS(true);
-
-  const flingGesture = Gesture.Simultaneous(zoomOutGesture, zoomInGesture);
+  }, [showTemporaryOverlay]);
 
   if (!hasPermission) {
     return <Text>No access to camera</Text>;
   }
 
-  if (mainBackDevices.length === 0) {
-    return <Text>No main back cameras found</Text>;
+  if (!device) {
+    return <Text>No camera device found</Text>;
   }
-
-  const currentDevice = mainBackDevices[currentDeviceIndex];
 
   return (
     <GestureHandlerRootView style={styles.container}>
-      <GestureDetector gesture={flingGesture}>
+      <GestureDetector gesture={combinedGesture}>
         <View style={StyleSheet.absoluteFill}>
           <Camera
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
-            device={currentDevice}
+            device={device}
             isActive={true}
             photo={true}
+            format={format}
+            zoom={zoom}
+            videoStabilizationMode="cinematic"
           />
         </View>
       </GestureDetector>
       <View style={styles.buttonContainer}>
-        {mainBackDevices.length > 1 && (
-          <>
-            <TouchableOpacity
-              style={[
-                styles.lensButton,
-                currentDeviceIndex === 0 && styles.disabledButton,
-              ]}
-              onPress={switchToPreviousLens}
-              disabled={currentDeviceIndex === 0}
-            >
-              <Text style={styles.buttonText}>-</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.lensButton,
-                currentDeviceIndex === mainBackDevices.length - 1 &&
-                  styles.disabledButton,
-              ]}
-              onPress={switchToNextLens}
-              disabled={currentDeviceIndex === mainBackDevices.length - 1}
-            >
-              <Text style={styles.buttonText}>+</Text>
-            </TouchableOpacity>
-          </>
-        )}
         <TouchableOpacity style={styles.captureButton} onPress={captureImage}>
-          <Text style={styles.buttonText}>Capture</Text>
+          <MaterialIcons name="camera" size={60} color="#000000" />
         </TouchableOpacity>
       </View>
       {isLoading && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="large" color="#ffffff" />
         </View>
+      )}
+      {showOverlay && (
+        <Animated.View style={[styles.overlay, animatedOverlayStyle]}>
+          <Text style={styles.overlayText}>LaTeX copied to clipboard</Text>
+        </Animated.View>
       )}
     </GestureHandlerRootView>
   );
@@ -293,32 +256,20 @@ const styles = StyleSheet.create({
   },
   buttonContainer: {
     position: "absolute",
-    bottom: 20,
+    bottom: 40,
     left: 0,
     right: 0,
     flexDirection: "row",
-    justifyContent: "space-around",
-    paddingHorizontal: 20, // Add some horizontal padding
-  },
-  lensButton: {
-    backgroundColor: "white",
-    padding: 15,
-    borderRadius: 10,
-    width: 80, // Increased from 50 to 80
-    alignItems: "center",
-  },
-  disabledButton: {
-    opacity: 0.5,
+    justifyContent: "center",
+    paddingHorizontal: 20,
   },
   captureButton: {
     backgroundColor: "white",
-    padding: 15,
-    borderRadius: 10,
-    width: 100, // Added width to make it consistent with other buttons
-    alignItems: "center", // Center the text
-  },
-  buttonText: {
-    fontSize: 18,
+    borderRadius: 60,
+    width: 300,
+    height: 100,
+    alignItems: "center",
+    justifyContent: "center",
   },
   loadingOverlay: {
     position: "absolute",
@@ -329,5 +280,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(0, 0, 0, 0.5)",
+  },
+  overlay: {
+    position: "absolute",
+    top: 40,
+    left: 20,
+    right: 20,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    padding: 10,
+    borderRadius: 5,
+    alignItems: "center",
+  },
+  overlayText: {
+    color: "white",
+    fontSize: 16,
   },
 });
