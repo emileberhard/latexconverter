@@ -53,16 +53,34 @@ const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
 });
 
-const logTokenUsageAndCost = (usage: {
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
-}) => {
-  const inputCost = (usage.prompt_tokens / 1000000) * 0.15;
-  const outputCost = (usage.completion_tokens / 1000000) * 0.6;
+const MODEL_PRICING = {
+  "gpt-4o-2024-08-06": {
+    inputCostPer1M: 2.5,
+    outputCostPer1M: 10.0,
+  },
+  "gpt-4o-mini": {
+    inputCostPer1M: 0.15,
+    outputCostPer1M: 0.6,
+  },
+};
+
+const logTokenUsageAndCost = (
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  },
+  model: string
+) => {
+  const pricing = MODEL_PRICING[model] || MODEL_PRICING["gpt-4o-mini"]; // Default to mini pricing if model not found
+
+  const inputCost = (usage.prompt_tokens / 1000000) * pricing.inputCostPer1M;
+  const outputCost =
+    (usage.completion_tokens / 1000000) * pricing.outputCostPer1M;
   const totalCost = inputCost + outputCost;
   const costFor1000Requests = totalCost * 1000;
 
+  console.log(`Model used: ${model}`);
   console.log(
     `Token usage - Input: ${usage.prompt_tokens}, Output: ${usage.completion_tokens}`
   );
@@ -244,11 +262,16 @@ export default function CameraScreen() {
     try {
       const promptText =
         currentMode === "paint"
-          ? "What's inside the red circle?"
+          ? "Respond with any math INSIDE THE RED CIRCLE. If there is no math circled, return 'No math found' and nothing else."
           : "Convert any math you see to LaTeX. If there is no math in the image, return 'No math found'.";
 
+      const models = { "4o": "gpt-4o-2024-08-06", mini: "gpt-4o-mini" };
+      const selectedModel = models["4o"];
+
+      const detailLevel = selectedModel === models["mini"] ? "high" : "low";
+
       const response = await openai.beta.chat.completions.parse({
-        model: "gpt-4o-2024-08-06",
+        model: selectedModel,
         messages: [
           {
             role: "user",
@@ -261,7 +284,7 @@ export default function CameraScreen() {
                 type: "image_url",
                 image_url: {
                   url: `data:image/jpeg;base64,${imageToProcess.data}`,
-                  detail: "low",
+                  detail: detailLevel,
                 },
               },
             ],
@@ -274,7 +297,7 @@ export default function CameraScreen() {
       });
 
       if (response.usage) {
-        logTokenUsageAndCost(response.usage);
+        logTokenUsageAndCost(response.usage, selectedModel);
       }
 
       const parsedResponse = response.choices[0].message.parsed;
