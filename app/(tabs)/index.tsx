@@ -20,9 +20,9 @@ import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
+  runOnJS,
 } from "react-native-reanimated";
 import * as ImageManipulator from "expo-image-manipulator";
-import { runOnJS } from "react-native-reanimated";
 
 const OPENAI_API_KEY =
   "sk-proj-VFyGtiY1hPXxUAxYs8v1T3BlbkFJ79xSOLRuWvoKLdR8Pmet";
@@ -37,7 +37,7 @@ export default function CameraScreen() {
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const cameraRef = useRef<CameraView>(null);
   const router = useRouter();
-  const [cropBoxSize, setCropBoxSize] = useState({
+  const cropBoxSize = useSharedValue({
     width: width * 0.8,
     height: height * 0.3,
   });
@@ -52,27 +52,51 @@ export default function CameraScreen() {
 
   const updateCropBoxSize = useCallback(
     (newWidth: number, newHeight: number) => {
-      setCropBoxSize({ width: newWidth, height: newHeight });
+      cropBoxSize.value = {
+        width: Math.max(100, Math.min(newWidth, width)),
+        height: Math.max(100, Math.min(newHeight, height)),
+      };
     },
     []
   );
 
   const panGesture = Gesture.Pan().onUpdate((e) => {
     cropBoxPosition.value = {
-      x: e.absoluteX - cropBoxSize.width / 2,
-      y: e.absoluteY - cropBoxSize.height / 2,
+      x: Math.max(
+        0,
+        Math.min(
+          e.absoluteX - cropBoxSize.value.width / 2,
+          width - cropBoxSize.value.width
+        )
+      ),
+      y: Math.max(
+        0,
+        Math.min(
+          e.absoluteY - cropBoxSize.value.height / 2,
+          height - cropBoxSize.value.height
+        )
+      ),
     };
   });
 
-  const cornerGesture = Gesture.Pan().onUpdate((e) => {
-    const newWidth = Math.max(100, cropBoxSize.width + e.translationX);
-    const newHeight = Math.max(100, cropBoxSize.height + e.translationY);
-    runOnJS(updateCropBoxSize)(newWidth, newHeight);
-  });
+  const cornerGesture = Gesture.Pan()
+    .onStart(() => {
+      runOnJS(updateCropBoxSize)(
+        cropBoxSize.value.width,
+        cropBoxSize.value.height
+      );
+    })
+    .onUpdate((e) => {
+      const newWidth = cropBoxSize.value.width + e.translationX;
+      const newHeight = cropBoxSize.value.height + e.translationY;
+      runOnJS(updateCropBoxSize)(newWidth, newHeight);
+    });
 
   const composed = Gesture.Simultaneous(panGesture, cornerGesture);
 
   const animatedStyles = useAnimatedStyle(() => ({
+    width: withTiming(cropBoxSize.value.width, { duration: 100 }),
+    height: withTiming(cropBoxSize.value.height, { duration: 100 }),
     transform: [
       { translateX: cropBoxPosition.value.x },
       { translateY: cropBoxPosition.value.y },
@@ -95,8 +119,8 @@ export default function CameraScreen() {
         const cropRegion = {
           originX: cropBoxPosition.value.x / width,
           originY: cropBoxPosition.value.y / height,
-          width: cropBoxSize.width / width,
-          height: cropBoxSize.height / height,
+          width: cropBoxSize.value.width / width,
+          height: cropBoxSize.value.height / height,
         };
 
         // Use Image Manipulator to crop the image
@@ -174,13 +198,7 @@ export default function CameraScreen() {
     <GestureHandlerRootView style={styles.container}>
       <CameraView ref={cameraRef} style={styles.camera} facing={"back"} />
       <GestureDetector gesture={composed}>
-        <Animated.View
-          style={[
-            styles.cropBox,
-            animatedStyles,
-            { width: cropBoxSize.width, height: cropBoxSize.height },
-          ]}
-        >
+        <Animated.View style={[styles.cropBox, animatedStyles]}>
           <View style={styles.cornerTopLeft} />
           <View style={styles.cornerTopRight} />
           <View style={styles.cornerBottomLeft} />
