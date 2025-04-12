@@ -1,6 +1,6 @@
 # LaTeX Converter App 📸➡️📝
 
-This is a simple Expo React Native app I made while studying for a math exam, designed to capture images of mathematical equations using the device camera and convert them into LaTeX code using the OpenAI API.
+This is a simple Expo React Native app I made while studying for a math exam, designed to capture images of mathematical equations using the device camera and convert them into LaTeX code using the OpenAI API + copy to clipboard. Combined with handoff sync on Apple devices it becomes a very convenient & fast way of transferring handwritten math into latex easily passed into tutor-LLMs or similar.
 
 ## ✨ Features
 
